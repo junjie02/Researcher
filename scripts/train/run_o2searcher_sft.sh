@@ -1,5 +1,5 @@
 set -x
-export WANDB_API_KEY="" # replace wandb api key
+export WANDB_API_KEY="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" # replace wandb api key
 
 nproc_per_node=$1
 
@@ -18,7 +18,7 @@ torchrun --standalone --nnodes=1 --nproc_per_node=$nproc_per_node \
     model.partial_pretrain=$model_path \
     optim.lr=1e-5 \
     trainer.default_local_dir=$save_path \
-    trainer.project_name=o2searcher \
+    trainer.project_name=researcher \
     trainer.experiment_name=qwen2.5-3b-sft \
     trainer.logger=['console'] \
     trainer.default_hdfs_dir=null \
