@@ -62,7 +62,7 @@ class FindingSentenceEvaluator(AbstractAgent):
         answer_pattern = r'<answer>(.*?)</answer>'
         answer_match = re.finditer(answer_pattern, text, re.DOTALL)
         answer_match = list(answer_match)
-        if len(answer_match) <= 1:
+        if len(answer_match) < 1:
             return []
         
         content = answer_match[-1].group(1).strip()

@@ -19,10 +19,10 @@
         "base_url": "", 
         "proxy": false
     },
-    "deepseek-v3": {
-        "model_name": "deepseek-v3-241226",
-        "api_key_var": "", 
-        "base_url": "", 
+    "deepseek-v4": {
+        "model_name": "deepseek-v4-flash",
+        "api_key_var": "sk-4a3cf59702074340b2a14ebd750c24ba", 
+        "base_url": "https://api.deepseek.com/v1", 
         "proxy": false
     },
     "qwen2.5": {

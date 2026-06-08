@@ -5,7 +5,7 @@ set -x
 # vLLM without XFORMERS will results in CUDA errors.
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export VLLM_USE_MODELSCOPE="0"
-export WANDB_API_KEY="" # replace the wandab api key 
+export WANDB_API_KEY="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" # replace the wandab api key 
 
 TRAIN_FILES="./o2searcher/data/hybrid/train.parquet"
 VAL_FILES="./o2searcher/data/hybrid/test.parquet"
@@ -51,7 +51,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.ref.log_prob_micro_batch_size=64 \
     trainer.critic_warmup=0 \
-    trainer.logger=['console'] \
+    trainer.logger=['console','wandb'] \
     trainer.project_name='o2searcher' \
     trainer.experiment_name='qwen2.5-3b-grpo' \
     +trainer.val_before_train=False \

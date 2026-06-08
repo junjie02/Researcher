@@ -4,7 +4,7 @@ export WANDB_API_KEY="wandb_v1_WGq70jYGv9ZyO0ngBQy1y122oCe_GvG9iIUM1qyPPBIL1fevT
 nproc_per_node=$1
 
 save_path="./checkpoints/o2searcher/coldstart/"
-model_path="Qwen2.5-3B-Instruct"
+model_path="./Qwen2.5-3B-Instruct"
 train_files="./o2searcher/data/coldstart/train.json"
 val_files="./o2searcher/data/coldstart/test.json"
 
@@ -12,11 +12,14 @@ torchrun --standalone --nnodes=1 --nproc_per_node=$nproc_per_node \
      -m verl.trainer.fsdp_sft_trainer \
     data.train_files=$train_files \
     data.val_files=$val_files \
-    data.train_batch_size=16 \
-    data.micro_batch_size=4 \
+    data.train_batch_size=8 \
+    data.micro_batch_size=1 \
     data.max_length=10240 \
+    data.truncation=right\
     model.partial_pretrain=$model_path \
+    model.enable_gradient_checkpointing=True\
     optim.lr=1e-5 \
+    optim.warmup_steps_ratio=0.1\
     trainer.default_local_dir=$save_path \
     trainer.project_name=researcher \
     trainer.experiment_name=qwen2.5-3b-sft \

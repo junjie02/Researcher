@@ -179,3 +179,37 @@ cython_debug/
 **/checkpoints/
 *.parquet
 memory.json
+
+
+# Search environment downloaded datasets and local indexes.
+/o2searcher/searcher/search_env/wiki_search/data/
+/o2searcher/searcher/search_env/wiki_search/model/
+/o2searcher/searcher/search_env/web_search/data/
+/o2searcher/searcher/search_env/web_search/meili_data.ms/
+/o2searcher/searcher/search_env/web_search/meilisearch*
+/o2searcher/searcher/search_env/web_search/data.ms/
+
+# Search/vector index artifacts.
+*.index
+*.faiss
+
+# Large corpus shards.
+*.jsonl
+*.jsonl.gz
+
+# ML model, checkpoint, and array artifacts.
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.npy
+*.npz
+*.arrow
+
+# Training/runtime outputs.
+runs/
+ray_results/
+*.tfevents.*
+
+
