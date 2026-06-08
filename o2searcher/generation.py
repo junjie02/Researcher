@@ -32,7 +32,7 @@ class GenerationConfig:
 PROBE_ASSISTANT_PREFIX = "<answer>"
 PROBE_ANSWER_ONLY_PROMPT = (
     "<|im_start|>user\n"
-    "Answer the original question using the conversation context so far. "
+    "Answer the original question using the conversation messages so far and your own existing knowledge. "
     "Output exactly one <answer>...</answer> block and no other text."
     "<|im_end|>\n"
     "<|im_start|>assistant\n"
@@ -294,8 +294,8 @@ class LLMGenerationManager:
                     probe_answer = probe_text
                 else:
                     probe_answer = PROBE_ASSISTANT_PREFIX + probe_text
-                    if '</answer>' not in probe_answer:
-                        probe_answer = probe_answer + '</answer>'
+                if '</answer>' not in probe_answer:
+                    probe_answer = probe_answer + '</answer>'
                 intermediate_answers[global_i].append(probe_answer)
                 intermediate_depths[global_i].append(probe_state['depths'][local_i])
 
