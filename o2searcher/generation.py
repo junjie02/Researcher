@@ -30,6 +30,15 @@ class GenerationConfig:
 
 
 PROBE_ASSISTANT_PREFIX = "<answer>"
+PROBE_ANSWER_ONLY_PROMPT = (
+    "<|im_start|>user\n"
+    "Answer the original question using the conversation context so far. "
+    "Output exactly one <answer>...</answer> block and no other text."
+    "<|im_end|>\n"
+    "<|im_start|>assistant\n"
+    "<answer>"
+)
+ASSISTANT_HEADER = "<|im_start|>assistant\n"
 
 class LLMGenerationManager:
     def __init__(
@@ -209,17 +218,15 @@ class LLMGenerationManager:
         trimmed_batch = {k: v[:-padding_size] for k, v in padded_output.batch.items()}
         
         # Handle meta_info if present
+        trimmed_meta = {}
         if hasattr(padded_output, 'meta_info') and padded_output.meta_info:
-            trimmed_meta = {}
             for k, v in padded_output.meta_info.items():
                 if isinstance(v, torch.Tensor) and v.ndim > 0 and v.shape[0] == padded_output.batch.batch_size[0]:
                     trimmed_meta[k] = v[:-padding_size]
                 else:
                     trimmed_meta[k] = v
-            padded_output.meta_info = trimmed_meta
-            
-        padded_output.batch = trimmed_batch
-        return padded_output
+
+        return DataProto.from_dict(trimmed_batch, meta_info=trimmed_meta)
 
     def _snapshot_probe_state(self, rollings: DataProto, mask: torch.Tensor, depth_values) -> Dict[str, Any]:
         """Clone rollout states for later side-channel probes."""
@@ -241,12 +248,15 @@ class LLMGenerationManager:
 
     def _build_probe_batch(self, probe_state: Dict[str, Any]) -> DataProto:
         """Build an independent answer-only prompt from a cloned rollout state."""
-        batch_size = len(probe_state['indices'])
-        probe_prefix_ids = self._batch_tokenize([PROBE_ASSISTANT_PREFIX] * batch_size)
-        input_ids = self.tensor_fn.concatenate_with_padding([
-            probe_state['tensors']['input_ids'],
-            probe_prefix_ids,
-        ])
+        prompt_texts = []
+        for input_ids in probe_state['tensors']['input_ids']:
+            valid_ids = input_ids[input_ids != self.tokenizer.pad_token_id]
+            prompt_text = self.tokenizer.decode(valid_ids, skip_special_tokens=False)
+            if prompt_text.endswith(ASSISTANT_HEADER):
+                prompt_text = prompt_text[:-len(ASSISTANT_HEADER)]
+            prompt_texts.append(prompt_text + PROBE_ANSWER_ONLY_PROMPT)
+
+        input_ids = self._batch_tokenize(prompt_texts)
         attention_mask = self.tensor_fn.create_attention_mask(input_ids)
         position_ids = self.tensor_fn.create_position_ids(attention_mask)
 
@@ -279,9 +289,13 @@ class LLMGenerationManager:
             _, probe_strings = self._postprocess_responses(probe_output.batch['responses'])
 
             for local_i, global_i in enumerate(probe_state['indices']):
-                probe_answer = PROBE_ASSISTANT_PREFIX + probe_strings[local_i]
-                if '</answer>' not in probe_answer:
-                    probe_answer = probe_answer + '</answer>'
+                probe_text = probe_strings[local_i]
+                if '<answer>' in probe_text:
+                    probe_answer = probe_text
+                else:
+                    probe_answer = PROBE_ASSISTANT_PREFIX + probe_text
+                    if '</answer>' not in probe_answer:
+                        probe_answer = probe_answer + '</answer>'
                 intermediate_answers[global_i].append(probe_answer)
                 intermediate_depths[global_i].append(probe_state['depths'][local_i])
 

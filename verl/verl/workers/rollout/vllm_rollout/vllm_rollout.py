@@ -200,8 +200,9 @@ class vLLMRollout(BaseRollout):
                     }
                 if prompts.meta_info.get('val_temperature', None):
                     kwargs['temperature'] = prompts.meta_info['val_temperature']
+                response_length = prompts.meta_info.get('response_length', self.config.response_length)
                 if prompts.meta_info.get('response_length', None):
-                    kwargs['max_tokens'] = prompts.meta_info['response_length']
+                    kwargs['max_tokens'] = response_length
                 # Generate sequences
                 with self.update_sampling_params(**kwargs):
                     output = self.inference_engine.generate(
@@ -215,11 +216,11 @@ class vLLMRollout(BaseRollout):
                 log_probs = output[1].to(idx.device)
 
                 # Pad sequences if needed
-                if response.shape[1] < self.config.response_length:
+                if response.shape[1] < response_length:
                     response = pad_sequence_to_length(
-                        response, self.config.response_length, self.pad_token_id)
+                        response, response_length, self.pad_token_id)
                     log_probs = pad_sequence_to_length(
-                        log_probs, self.config.response_length, self.pad_token_id)
+                        log_probs, response_length, self.pad_token_id)
 
                 # Handle multiple samples per prompt
                 if self.config.n > 1 and do_sample:

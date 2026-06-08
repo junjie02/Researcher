@@ -221,7 +221,7 @@ class RewardManager():
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
 
             response_ids = data_item.batch['responses'] 
-            valid_response_length = data_item.batch['attention_mask'][prompt_length:].sum()
+            valid_response_length = int(data_item.batch['attention_mask'][prompt_length:].sum().item())
             valid_response_ids = response_ids[:valid_response_length]
 
             # decode
@@ -293,7 +293,8 @@ class RewardManager():
         # Fill reward tensor with results
         reward_metrics = {}
         for i, score, valid_response_length, metrics in results:
-            reward_tensor[i, valid_response_length - 1] = score
+            reward_index = max(valid_response_length - 1, 0)
+            reward_tensor[i, reward_index] = score
             for key, value in metrics.items():
                 reward_metrics.setdefault(key, [0.0] * len(data))
                 reward_metrics[key][i] = value
