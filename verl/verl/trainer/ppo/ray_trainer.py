@@ -163,6 +163,17 @@ def reduce_metrics(metrics: dict):
     return metrics
 
 
+def collect_reward_metrics(batch: DataProto):
+    reward_metrics = batch.meta_info.get('reward_metrics', {})
+    if not reward_metrics:
+        return {}
+    return {
+        f'reward/{key}': float(np.mean(value))
+        for key, value in reward_metrics.items()
+        if len(value) > 0
+    }
+
+
 def _compute_response_info(batch):
     response_length = batch.batch['responses'].shape[-1]
 
@@ -436,6 +447,11 @@ class RayPPOTrainer(object):
             num_gpus=self.config.trainer.n_gpus_per_node,
             search_urls = self.config.searcher.urls,
             topk = self.config.searcher.topk,
+            intermediate_answer_max_tokens=self.config.agent.get('intermediate_answer_max_tokens', 512),
+            enable_intermediate_probes=(
+                self.config.agent.get('efficiency_reward', {}).get('enable', True) or
+                self.config.agent.get('quality_reward', {}).get('enable', True)
+            ),
         )
 
         # Agent config preparation
@@ -666,6 +682,11 @@ class RayPPOTrainer(object):
             num_gpus=self.config.trainer.n_gpus_per_node,
             search_urls = self.config.searcher.urls,
             topk = self.config.searcher.topk,
+            intermediate_answer_max_tokens=self.config.agent.get('intermediate_answer_max_tokens', 512),
+            enable_intermediate_probes=(
+                self.config.agent.get('efficiency_reward', {}).get('enable', True) or
+                self.config.agent.get('quality_reward', {}).get('enable', True)
+            ),
         )
 
         generation_manager = LLMGenerationManager(
@@ -729,6 +750,7 @@ class RayPPOTrainer(object):
                             batch = batch.union(reward_tensor)
 
                         reward_tensor = self.reward_fn(batch)
+                        metrics.update(collect_reward_metrics(batch))
                         batch.batch['token_level_scores'] = reward_tensor
 
 

@@ -19,7 +19,7 @@ def extract_answer(solution_str):
     answer_pattern = r'<answer>(.*?)</answer>'
     match = re.finditer(answer_pattern, solution_str, re.DOTALL)
     matches = list(match)
-    if len(matches) = 1:
+    if len(matches) < 1:
         return None
     
     return matches[-1].group(1).strip()

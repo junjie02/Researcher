@@ -17,33 +17,183 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 from verl import DataProto
 import torch
+import re
 from verl.utils.reward_score import qa_em
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 
-from o2searcher.rewards import o2searcher_reward_fn
+from o2searcher.rewards.rewards_format import format_reward_fn
+from o2searcher.rewards.rewards_score import batch_f1_reward_fn, dv_reward_fn, f1_reward_fn
 
-def _select_rm_score_fn(data_source):
-    if data_source in ['nq_hotpotqa', 'nq', 'triviaqa', 'popqa', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle']:
-        return qa_em.compute_score_em
-    else:
-        return o2searcher_reward_fn
+CLOSED_ENDED_SOURCES = ['nq_hotpotqa', 'nq', 'triviaqa', 'popqa', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle']
 
 
 def _adjust_panality(panality, data_source):
-    if data_source in ['nq_hotpotqa', 'nq', 'triviaqa', 'popqa', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle']:
+    if data_source in CLOSED_ENDED_SOURCES:
         return 0.5*panality
     else:
         return 0.2*panality
+
+
+def _config_get(config, key, default):
+    if config is None:
+        return default
+    if hasattr(config, 'get'):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def _extract_last_answer(text):
+    matches = re.findall(r'<answer>(.*?)</answer>', text, re.DOTALL)
+    if not matches:
+        return ''
+    return matches[-1].strip()
+
+
+def _target_list(ground_truth):
+    target = ground_truth['target']
+    if hasattr(target, 'tolist'):
+        target = target.tolist()
+    if isinstance(target, tuple):
+        target = list(target)
+    if not isinstance(target, list):
+        target = [target]
+    return target
+
+
+def _closed_token_f1(prediction, golden_answers):
+    prediction = qa_em.normalize_answer(prediction)
+    pred_tokens = prediction.split()
+    if not pred_tokens:
+        return 0.0
+
+    best_f1 = 0.0
+    for golden_answer in golden_answers:
+        gold_tokens = qa_em.normalize_answer(golden_answer).split()
+        if not gold_tokens:
+            continue
+        common = {}
+        for token in pred_tokens:
+            common[token] = common.get(token, 0) + 1
+        num_same = 0
+        for token in gold_tokens:
+            if common.get(token, 0) > 0:
+                num_same += 1
+                common[token] -= 1
+        if num_same == 0:
+            continue
+        precision = num_same / len(pred_tokens)
+        recall = num_same / len(gold_tokens)
+        best_f1 = max(best_f1, 2 * precision * recall / (precision + recall))
+    return float(best_f1)
+
+
+def _efficiency_reward(t_c, d, max_turns, eps=1e-6):
+    if t_c < 0:
+        return 0.025 * d
+    if t_c == 0:
+        return 0.4 - 0.05 * d
+
+    reward = 0.4 * min(d, t_c) / (t_c + eps)
+    if d > t_c:
+        reward -= 0.05 * (d - t_c)
+        if d >= max_turns:
+            reward -= 0.1
+    return float(reward)
+
+
+def _query_list(queries):
+    if queries is None:
+        return []
+    if isinstance(queries, str):
+        return [q for q in queries.split('\n') if q.strip()]
+    return [q for q in queries if str(q).strip()]
+
+
+def _base_reward(solution_str, ground_truth, queries, data_source):
+    format_score = format_reward_fn(solution_str).reward
+    dv_score = dv_reward_fn(_query_list(queries))
+    if data_source in CLOSED_ENDED_SOURCES:
+        accuracy_score = qa_em.compute_score_em(solution_str=solution_str, ground_truth=ground_truth, queries=queries)
+    else:
+        accuracy_score = f1_reward_fn(solution_str, _target_list(ground_truth))
+
+    weights = [1.0, 1.0, 0.5]
+    base_score = 0.5 * (
+        weights[0] * format_score +
+        weights[1] * accuracy_score +
+        weights[2] * dv_score
+    ) / sum(weights)
+    return float(base_score), {
+        'format_mean': float(format_score),
+        'accuracy_mean': float(accuracy_score),
+        'dv_mean': float(dv_score),
+        'format_weighted_mean': float(0.5 * weights[0] * format_score / sum(weights)),
+        'accuracy_weighted_mean': float(0.5 * weights[1] * accuracy_score / sum(weights)),
+        'dv_weighted_mean': float(0.5 * weights[2] * dv_score / sum(weights)),
+    }
 
 
 class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine) -> None:
+    def __init__(self, tokenizer, num_examine, agent_config=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
+        self.agent_config = agent_config
+
+        efficiency_config = _config_get(agent_config, 'efficiency_reward', {})
+        quality_config = _config_get(agent_config, 'quality_reward', {})
+        self.efficiency_enabled = bool(_config_get(efficiency_config, 'enable', True))
+        self.quality_enabled = bool(_config_get(quality_config, 'enable', True))
+        self.f1_threshold = float(_config_get(efficiency_config, 'f1_threshold', 0.75))
+        self.efficiency_weight = float(_config_get(efficiency_config, 'weight', 0.25))
+        self.quality_weight = float(_config_get(quality_config, 'weight', 0.15))
+        self.max_turns = int(_config_get(agent_config, 'max_turns', 5))
+
+    def _score_intermediate_answers(self, data_source, ground_truth, candidate_texts):
+        answers = [_extract_last_answer(text) for text in candidate_texts]
+        if data_source in CLOSED_ENDED_SOURCES:
+            golden_answers = _target_list(ground_truth)
+            success_scores = [1.0 if qa_em.em_check(answer, golden_answers) else 0.0 for answer in answers]
+            quality_scores = [_closed_token_f1(answer, golden_answers) for answer in answers]
+            return success_scores, quality_scores
+
+        references = _target_list(ground_truth)
+        f1_scores = batch_f1_reward_fn(candidate_texts, references, threshold=self.f1_threshold)
+        return f1_scores, f1_scores
+
+    def _compute_probe_rewards(self, data_source, ground_truth, candidate_texts, candidate_depths, actual_search_depth):
+        if not candidate_texts:
+            return -1, 0.0, 0.0, 0.0, 0.0
+
+        success_scores, quality_scores = self._score_intermediate_answers(data_source, ground_truth, candidate_texts)
+        success_flags = []
+        for score in success_scores:
+            if data_source in CLOSED_ENDED_SOURCES:
+                success_flags.append(score == 1.0)
+            else:
+                success_flags.append(score >= self.f1_threshold)
+
+        ordered = sorted(
+            zip(candidate_depths, success_flags, quality_scores),
+            key=lambda item: item[0],
+        )
+        t_c = -1
+        for depth, success, _ in ordered:
+            if success:
+                t_c = int(depth)
+                break
+
+        zero_depth_scores = [score for depth, score in zip(candidate_depths, quality_scores) if int(depth) == 0]
+        score_0 = zero_depth_scores[0] if zero_depth_scores else 0.0
+        best_score = max(quality_scores) if quality_scores else 0.0
+        raw_quality = max(0.0, best_score - score_0)
+        raw_efficiency = _efficiency_reward(t_c, actual_search_depth, self.max_turns)
+        over_search = max(0, actual_search_depth - t_c) if t_c >= 0 else 0
+        success_ratio = 1.0 if t_c >= 0 else 0.0
+        return t_c, raw_efficiency, raw_quality, over_search, success_ratio
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -83,8 +233,48 @@ class RewardManager():
             data_source = data_item.non_tensor_batch['data_source']
             queries = data_item.meta_info['queries'][i]
             panality = data_item.meta_info['penalties'][i]
-            compute_score_fn = _select_rm_score_fn(data_source)
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, queries=queries)
+            base_score, base_metrics = _base_reward(
+                solution_str=sequences_str,
+                ground_truth=ground_truth,
+                queries=queries,
+                data_source=data_source,
+            )
+
+            actual_search_depth = int(data_item.meta_info.get('valid_search_stats', [0] * len(data))[i])
+            intermediate_answers = data_item.meta_info.get('intermediate_answers', [[] for _ in range(len(data))])[i]
+            intermediate_depths = data_item.meta_info.get('intermediate_depths', [[] for _ in range(len(data))])[i]
+            candidate_texts = list(intermediate_answers)
+            candidate_depths = [int(depth) for depth in intermediate_depths]
+            candidate_texts.append(sequences_str)
+            candidate_depths.append(actual_search_depth)
+
+            t_c, raw_efficiency, raw_quality, over_search, tc_success = self._compute_probe_rewards(
+                data_source=data_source,
+                ground_truth=ground_truth,
+                candidate_texts=candidate_texts,
+                candidate_depths=candidate_depths,
+                actual_search_depth=actual_search_depth,
+            )
+
+            efficiency_component = self.efficiency_weight * raw_efficiency if self.efficiency_enabled else 0.0
+            quality_component = self.quality_weight * raw_quality if self.quality_enabled else 0.0
+            score = base_score + efficiency_component + quality_component
+
+            metrics = {
+                'base_mean': float(base_score),
+                **base_metrics,
+                'raw_efficiency_mean': float(raw_efficiency),
+                'raw_quality_mean': float(raw_quality),
+                'efficiency_mean': float(efficiency_component),
+                'quality_mean': float(quality_component),
+                'final_mean': float(score),
+                'efficiency_weight': float(self.efficiency_weight),
+                'quality_weight': float(self.quality_weight),
+                'tc_mean': float(t_c),
+                'tc_success_ratio': float(tc_success),
+                'over_search_mean': float(over_search),
+                'intermediate_score_gain_mean': float(raw_quality),
+            }
             
             # with print_lock:
             #     if data_source not in already_print_data_sources:
@@ -93,7 +283,7 @@ class RewardManager():
             #     if already_print_data_sources[data_source] < self.num_examine:
             #         already_print_data_sources[data_source] += 1
             #         print(sequences_str)      
-            return i, score, valid_response_length
+            return i, score, valid_response_length, metrics
 
         # Process items in parallel using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=96) as executor:
@@ -101,8 +291,14 @@ class RewardManager():
             results = list(executor.map(process_item, args))
 
         # Fill reward tensor with results
-        for i, score, valid_response_length in results:
+        reward_metrics = {}
+        for i, score, valid_response_length, metrics in results:
             reward_tensor[i, valid_response_length - 1] = score
+            for key, value in metrics.items():
+                reward_metrics.setdefault(key, [0.0] * len(data))
+                reward_metrics[key][i] = value
+
+        data.meta_info['reward_metrics'] = reward_metrics
 
         return reward_tensor
 
@@ -188,10 +384,10 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
+    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, agent_config=config.agent)
 
     # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
+    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1, agent_config=config.agent)
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 

@@ -200,6 +200,8 @@ class vLLMRollout(BaseRollout):
                     }
                 if prompts.meta_info.get('val_temperature', None):
                     kwargs['temperature'] = prompts.meta_info['val_temperature']
+                if prompts.meta_info.get('response_length', None):
+                    kwargs['max_tokens'] = prompts.meta_info['response_length']
                 # Generate sequences
                 with self.update_sampling_params(**kwargs):
                     output = self.inference_engine.generate(

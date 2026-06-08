@@ -25,6 +25,11 @@ class GenerationConfig:
     num_gpus: int
     search_urls: dict = None
     topk: int = 3
+    intermediate_answer_max_tokens: int = 512
+    enable_intermediate_probes: bool = True
+
+
+PROBE_ASSISTANT_PREFIX = "<answer>"
 
 class LLMGenerationManager:
     def __init__(
@@ -195,7 +200,7 @@ class LLMGenerationManager:
             pad_sequence = v[0:1].repeat(padding_size, *[1] * (len(v.shape) - 1))
             padded_batch[k] = torch.cat([v, pad_sequence], dim=0)
 
-        padded_active_batch = DataProto.from_dict(padded_batch)
+        padded_active_batch = DataProto.from_dict(padded_batch, meta_info=dict(active_batch.meta_info))
 
         # Generate with padded batch
         padded_output = self.actor_rollout_wg.generate_sequences(padded_active_batch)
@@ -207,7 +212,7 @@ class LLMGenerationManager:
         if hasattr(padded_output, 'meta_info') and padded_output.meta_info:
             trimmed_meta = {}
             for k, v in padded_output.meta_info.items():
-                if isinstance(v, torch.Tensor):
+                if isinstance(v, torch.Tensor) and v.ndim > 0 and v.shape[0] == padded_output.batch.batch_size[0]:
                     trimmed_meta[k] = v[:-padding_size]
                 else:
                     trimmed_meta[k] = v
@@ -215,6 +220,72 @@ class LLMGenerationManager:
             
         padded_output.batch = trimmed_batch
         return padded_output
+
+    def _snapshot_probe_state(self, rollings: DataProto, mask: torch.Tensor, depth_values) -> Dict[str, Any]:
+        """Clone rollout states for later side-channel probes."""
+        if mask.sum().item() == 0:
+            return None
+
+        active_indices = torch.nonzero(mask, as_tuple=False).flatten().tolist()
+        tensors = {
+            k: v[mask].clone()
+            for k, v in rollings.batch.items()
+        }
+        depths = [int(depth_values[i]) for i in active_indices]
+        return {
+            'indices': active_indices,
+            'depths': depths,
+            'tensors': tensors,
+            'meta_info': dict(rollings.meta_info),
+        }
+
+    def _build_probe_batch(self, probe_state: Dict[str, Any]) -> DataProto:
+        """Build an independent answer-only prompt from a cloned rollout state."""
+        batch_size = len(probe_state['indices'])
+        probe_prefix_ids = self._batch_tokenize([PROBE_ASSISTANT_PREFIX] * batch_size)
+        input_ids = self.tensor_fn.concatenate_with_padding([
+            probe_state['tensors']['input_ids'],
+            probe_prefix_ids,
+        ])
+        attention_mask = self.tensor_fn.create_attention_mask(input_ids)
+        position_ids = self.tensor_fn.create_position_ids(attention_mask)
+
+        effective_len = attention_mask.sum(dim=1).max()
+        max_len = min(self.config.max_prompt_length, effective_len)
+        probe_batch = DataProto.from_dict({
+            'input_ids': input_ids[:, -max_len:],
+            'position_ids': position_ids[:, -max_len:],
+            'attention_mask': attention_mask[:, -max_len:],
+        })
+        probe_batch.meta_info.update(probe_state['meta_info'])
+        probe_batch.meta_info['do_sample'] = False
+        probe_batch.meta_info['temperature'] = 0
+        probe_batch.meta_info['response_length'] = self.config.intermediate_answer_max_tokens
+        probe_batch.meta_info.pop('val_temperature', None)
+        return probe_batch
+
+    def _run_intermediate_probes(self, probe_states: List[Dict[str, Any]], batch_size: int) -> Tuple[List[List[str]], List[List[int]]]:
+        """Generate probe answers after the main trajectory is complete."""
+        intermediate_answers = [[] for _ in range(batch_size)]
+        intermediate_depths = [[] for _ in range(batch_size)]
+        if not self.config.enable_intermediate_probes:
+            return intermediate_answers, intermediate_depths
+
+        for probe_state in probe_states:
+            if probe_state is None:
+                continue
+            probe_batch = self._build_probe_batch(probe_state)
+            probe_output = self._generate_with_gpu_padding(probe_batch)
+            _, probe_strings = self._postprocess_responses(probe_output.batch['responses'])
+
+            for local_i, global_i in enumerate(probe_state['indices']):
+                probe_answer = PROBE_ASSISTANT_PREFIX + probe_strings[local_i]
+                if '</answer>' not in probe_answer:
+                    probe_answer = probe_answer + '</answer>'
+                intermediate_answers[global_i].append(probe_answer)
+                intermediate_depths[global_i].append(probe_state['depths'][local_i])
+
+        return intermediate_answers, intermediate_depths
 
     def run_llm_loop(self, gen_batch, initial_input_ids: torch.Tensor) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
@@ -232,6 +303,16 @@ class LLMGenerationManager:
         batch_queries = ['']*active_mask.sum()
         abilities = gen_batch.non_tensor_batch['ability']
         batch_penalties = [0]*active_mask.sum()
+        meta_info = dict(gen_batch.meta_info)
+        probe_states = []
+        if self.config.enable_intermediate_probes:
+            probe_states.append(
+                self._snapshot_probe_state(
+                    rollings,
+                    active_mask.clone(),
+                    [0] * gen_batch.batch['input_ids'].shape[0],
+                )
+            )
         # Main generation loop
         for step in range(self.config.max_turns):
             if not active_mask.sum():
@@ -244,10 +325,11 @@ class LLMGenerationManager:
             # gen_output = self.actor_rollout_wg.generate_sequences(rollings)
             rollings_active = DataProto.from_dict({
                 k: v[active_mask] for k, v in rollings.batch.items()
-            })            
+            }, meta_info=dict(rollings.meta_info))
             gen_output = self._generate_with_gpu_padding(rollings_active)
 
-            meta_info = gen_output.meta_info            
+            if gen_output.meta_info:
+                meta_info.update(gen_output.meta_info)
             responses_ids, responses_str = self._postprocess_responses(gen_output.batch['responses'])
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
@@ -291,6 +373,15 @@ class LLMGenerationManager:
                 responses_ids,
                 next_obs_ids
             )
+            if self.config.enable_intermediate_probes:
+                search_mask = torch.tensor(is_search, dtype=torch.bool)
+                probe_states.append(
+                    self._snapshot_probe_state(
+                        rollings,
+                        search_mask,
+                        valid_search_stats.tolist(),
+                    )
+                )
 
         # final LLM rollout
         if active_mask.sum():
@@ -302,10 +393,11 @@ class LLMGenerationManager:
             # gen_output = self.actor_rollout_wg.generate_sequences(rollings)
             rollings_active = DataProto.from_dict({
                 k: v[active_mask] for k, v in rollings.batch.items()
-            })            
+            }, meta_info=dict(rollings.meta_info))
             gen_output = self._generate_with_gpu_padding(rollings_active)
 
-            meta_info = gen_output.meta_info            
+            if gen_output.meta_info:
+                meta_info.update(gen_output.meta_info)
             responses_ids, responses_str = self._postprocess_responses(gen_output.batch['responses'])
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
@@ -326,6 +418,11 @@ class LLMGenerationManager:
                 original_right_side,
                 responses_ids,
             )
+
+        intermediate_answers, intermediate_depths = self._run_intermediate_probes(
+            probe_states,
+            gen_batch.batch['input_ids'].shape[0],
+        )
         
         meta_info['turns_stats'] = turns_stats.tolist()
         meta_info['active_mask'] = active_mask.tolist()
@@ -334,6 +431,8 @@ class LLMGenerationManager:
         meta_info['learnings_str'] = batch_learnings_str
         meta_info['queries'] = batch_queries
         meta_info['penalties'] = batch_penalties
+        meta_info['intermediate_answers'] = intermediate_answers
+        meta_info['intermediate_depths'] = intermediate_depths
         print("ACTIVE_TRAJ_NUM:", active_num_list)
         
         return self._compose_final_output(original_left_side, original_right_side, meta_info)

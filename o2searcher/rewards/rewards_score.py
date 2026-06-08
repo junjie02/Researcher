@@ -31,6 +31,25 @@ def f1_reward_fn(solution_str: str, ground_truth, do_print=False) -> float:
     except Exception as e:
         print(f"[WARNING] F1 score error! {str(e)}")
         return 0.0
+
+
+def batch_f1_reward_fn(solution_strs: List[str], ground_truth, threshold: float = 0.75, do_print=False) -> List[float]:
+    if not solution_strs:
+        return []
+
+    payload = {
+        "generated_texts": solution_strs,
+        "reference_points": ground_truth,
+        "threshold": threshold
+    }
+    try:
+        output = requests.post(F1_URL.replace('/calculate_finding_scores', '/batch_calculate_finding_scores'), json=payload).json()
+        if do_print:
+            print(output)
+        return [float(item.get('f1', 0.0)) for item in output]
+    except Exception as e:
+        print(f"[WARNING] Batch F1 score error! {str(e)}")
+        return [f1_reward_fn(solution_str, ground_truth, do_print=do_print) for solution_str in solution_strs]
     
 
 if __name__ == '__main__':

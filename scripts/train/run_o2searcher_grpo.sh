@@ -63,6 +63,12 @@ python3 -m verl.trainer.main_ppo \
     trainer.total_training_steps=151 \
     trainer.total_epochs=3 \
     agent.max_turns=4 \
+    agent.intermediate_answer_max_tokens=512 \
+    agent.efficiency_reward.enable=True \
+    agent.efficiency_reward.f1_threshold=0.75 \
+    agent.efficiency_reward.weight=0.15 \
+    agent.quality_reward.enable=True \
+    agent.quality_reward.weight=0.10 \
     searcher.urls.openended="http://127.0.0.1:10102/search" \
     searcher.urls.closedended="http://127.0.0.1:10001/wiki_search" \
     searcher.topk=3 "${@:1}"
