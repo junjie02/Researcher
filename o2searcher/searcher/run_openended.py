@@ -18,7 +18,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--local_url', type=str, default="http://127.0.0.1:10000/search")
 parser.add_argument('--link_tag', type=str, default='href')
-parser.add_argument('--model_name', type=str, default='deepseek-v4')
+parser.add_argument('--model_name', type=str, default='qwen-turbo')
 parser.add_argument('--port', type=int, default=10102)
 args = parser.parse_args()
 
@@ -33,7 +33,7 @@ EXCLUDED_EXTENSIONS = ('.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx'
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
-SEARCH_CN = False
+SEARCH_CN = True
 RETURN_CACHE = False
 
 # Initialize components

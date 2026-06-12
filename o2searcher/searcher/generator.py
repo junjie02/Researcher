@@ -20,6 +20,9 @@ class GPTGenerator:
         api_key = self.api_configs[model]['api_key_var']
         base_url = self.api_configs[model]['base_url']
         proxy_url = self.api_configs[model].get('proxy_url', None)
+        # extra_body 是 OpenAI SDK 透传给厂商的私有参数,比如 DashScope 的 enable_thinking。
+        # 没配则不传,保持对 OpenAI/DeepSeek 等不识别该字段的厂商的兼容。
+        self.extra_body = self.api_configs[model].get('extra_body', None)
 
         if proxy_url is not None:
             self.client = AsyncOpenAI(
@@ -48,16 +51,19 @@ class GPTGenerator:
             if try_times == self.max_try_times:
                 return ''
             try:
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=self.max_completion_token
-                )
-                
+                create_kwargs = {
+                    'model': self.model,
+                    'messages': messages,
+                    'max_tokens': self.max_completion_token,
+                }
+                if self.extra_body:
+                    create_kwargs['extra_body'] = self.extra_body
+                response = await self.client.chat.completions.create(**create_kwargs)
+
                 await self.calculate_tokens(response)
                 content = response.choices[0].message.content
                 return content
-                
+
             except Exception as e:
                 print(e)
                 try_times += 1

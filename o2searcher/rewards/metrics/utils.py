@@ -25,8 +25,11 @@ def get_config(model: str):
     api_key = api_configs[model]['api_key_var']
     base_url = api_configs[model]['base_url']
     proxy_url = api_configs[model].get('proxy_url', None)
+    # extra_body 是 OpenAI SDK 透传给厂商的私有参数,比如 DashScope 的 enable_thinking。
+    # 没配则不传,保持对 OpenAI/DeepSeek 等不识别该字段的厂商的兼容。
+    extra_body = api_configs[model].get('extra_body', None)
 
-    return model_name, api_key, base_url, proxy_url
+    return model_name, api_key, base_url, proxy_url, extra_body
 
 
 def extract_json_to_dict(text):
@@ -117,7 +120,7 @@ def extract_answer(full_response: List[Dict[str, str]]):
 
 class AbstractAgent:
     def __init__(self, model_name):
-        model_name, api_key, base_url, proxy_url = get_config(model_name)
+        model_name, api_key, base_url, proxy_url, extra_body = get_config(model_name)
 
         if proxy_url:
             self.client = openai.OpenAI(
@@ -132,6 +135,7 @@ class AbstractAgent:
             )
 
         self.model_name = model_name
+        self.extra_body = extra_body
 
 
     def _set_system_prompt_from_text(self, file_path: str):
@@ -159,12 +163,15 @@ class AbstractAgent:
             ]
 
         try:
-            res = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=temperature,
-                top_p=top_p
-            )
+            create_kwargs = {
+                'model': self.model_name,
+                'messages': messages,
+                'temperature': temperature,
+                'top_p': top_p,
+            }
+            if self.extra_body:
+                create_kwargs['extra_body'] = self.extra_body
+            res = self.client.chat.completions.create(**create_kwargs)
             return res.choices[0].message.content
         except Exception as e:
             raise(e)

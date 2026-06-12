@@ -5,7 +5,7 @@ import re
 import json
 from typing import List, Union
 import torch
-from utils import AbstractAgent
+from .utils import AbstractAgent
 from scipy.optimize import linear_sum_assignment
 import os
 

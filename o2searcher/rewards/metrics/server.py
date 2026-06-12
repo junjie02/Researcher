@@ -16,7 +16,7 @@ args = parser.parse_args()
 app = FastAPI(title="Metrics")
 
 
-model_name = 'doubao-32k'
+model_name = 'qwen-turbo'
 calculator = QueryIndependenceTransformer(model_name)
 evaluator = FindingSentenceEvaluator(model_name)
 
@@ -81,4 +81,6 @@ async def calculate_finding_scores(data: DataModel):
 
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="0.0.0.0", port=args.port, reload=False)
+    # 必须用绝对路径：start_services.sh 用 `python -m o2searcher.rewards.metrics.server` 启动，
+    # cwd 是项目根，uvicorn 找不到相对模块 "server"，会报 "Could not import module server"
+    uvicorn.run("o2searcher.rewards.metrics.server:app", host="0.0.0.0", port=args.port, reload=False)

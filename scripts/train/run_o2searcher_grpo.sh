@@ -1,10 +1,24 @@
 #!/bin/bash
 set -x
 
+# 缓存重定向：HF / ModelScope / pip / torch 全部下到数据盘
+source "$(dirname "$0")/../env.sh"
+
+# verl (veRL 0.1) 是在 researcher 环境下以 editable 模式 pip install 的，
+# 必须切到 researcher 环境，否则裸 python3 会解析到 base 的 /root/miniconda3/bin/python3，
+# 报 ModuleNotFoundError: No module named 'verl.trainer'
+CONDA_BASE_PATH="${CONDA_EXE%/bin/conda}"
+if [ -z "$CONDA_BASE_PATH" ] || [ ! -f "$CONDA_BASE_PATH/etc/profile.d/conda.sh" ]; then
+    CONDA_BASE_PATH="/root/miniconda3"
+fi
+source "$CONDA_BASE_PATH/etc/profile.d/conda.sh"
+conda activate researcher
+
 # Warning: Export VLLM_ATTENTION_BACKEND on every machine before starting Ray cluster.
 # vLLM without XFORMERS will results in CUDA errors.
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export VLLM_USE_MODELSCOPE="0"
+export HF_ENDPOINT=https://hf-mirror.com
 export WANDB_API_KEY="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" # replace the wandab api key 
 
 TRAIN_FILES="./o2searcher/data/hybrid/train.parquet"
@@ -22,16 +36,16 @@ python3 -m verl.trainer.main_ppo \
     data.max_prompt_length=8096 \
     data.max_response_length=2048 \
     data.max_start_length=2048 \
-    data.max_obs_length=2048 \
+    data.max_obs_length=3072 \
     actor_rollout_ref.model.path=$MODEL_PATH  \
-    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.optim.lr=3e-6 \
     actor_rollout_ref.actor.state_masking=True \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
-    actor_rollout_ref.actor.ppo_micro_batch_size=32 \
+    actor_rollout_ref.actor.ppo_micro_batch_size=16 \
     actor_rollout_ref.actor.ppo_epochs=1 \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
-    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32768 \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=24567 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -44,7 +58,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.temperature=1 \
     actor_rollout_ref.rollout.val_temperature=0.6 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.85 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.60 \
     actor_rollout_ref.rollout.n_agent=8 \
     actor_rollout_ref.rollout.n_agent_val=1 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=64 \
@@ -55,7 +69,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.project_name='o2searcher' \
     trainer.experiment_name='qwen2.5-3b-grpo' \
     +trainer.val_before_train=False \
-    trainer.n_gpus_per_node=4 \
+    trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.save_freq=50 \
     trainer.test_freq=150 \
@@ -63,12 +77,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.total_training_steps=151 \
     trainer.total_epochs=3 \
     agent.max_turns=4 \
-    agent.intermediate_answer_max_tokens=512 \
+    agent.intermediate_answer_max_tokens=2048 \
     agent.efficiency_reward.enable=True \
-    agent.efficiency_reward.f1_threshold=0.75 \
+    agent.efficiency_reward.f1_threshold=0.85 \
     agent.efficiency_reward.weight=0.15 \
-    agent.quality_reward.enable=True \
-    agent.quality_reward.weight=0.10 \
     searcher.urls.openended="http://127.0.0.1:10102/search" \
     searcher.urls.closedended="http://127.0.0.1:10001/wiki_search" \
     searcher.topk=3 "${@:1}"

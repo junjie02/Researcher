@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import re
 from typing import List, Dict, Any, Tuple
-from utils import AbstractAgent
+from .utils import AbstractAgent
 import json
 import os
 

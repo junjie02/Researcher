@@ -449,8 +449,7 @@ class RayPPOTrainer(object):
             topk = self.config.searcher.topk,
             intermediate_answer_max_tokens=self.config.agent.get('intermediate_answer_max_tokens', 512),
             enable_intermediate_probes=(
-                self.config.agent.get('efficiency_reward', {}).get('enable', True) or
-                self.config.agent.get('quality_reward', {}).get('enable', True)
+                self.config.agent.get('efficiency_reward', {}).get('enable', True)
             ),
         )
 
@@ -684,8 +683,7 @@ class RayPPOTrainer(object):
             topk = self.config.searcher.topk,
             intermediate_answer_max_tokens=self.config.agent.get('intermediate_answer_max_tokens', 512),
             enable_intermediate_probes=(
-                self.config.agent.get('efficiency_reward', {}).get('enable', True) or
-                self.config.agent.get('quality_reward', {}).get('enable', True)
+                self.config.agent.get('efficiency_reward', {}).get('enable', True)
             ),
         )
 

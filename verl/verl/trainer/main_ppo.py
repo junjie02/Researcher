@@ -61,36 +61,9 @@ def _target_list(ground_truth):
     return target
 
 
-def _closed_token_f1(prediction, golden_answers):
-    prediction = qa_em.normalize_answer(prediction)
-    pred_tokens = prediction.split()
-    if not pred_tokens:
-        return 0.0
-
-    best_f1 = 0.0
-    for golden_answer in golden_answers:
-        gold_tokens = qa_em.normalize_answer(golden_answer).split()
-        if not gold_tokens:
-            continue
-        common = {}
-        for token in pred_tokens:
-            common[token] = common.get(token, 0) + 1
-        num_same = 0
-        for token in gold_tokens:
-            if common.get(token, 0) > 0:
-                num_same += 1
-                common[token] -= 1
-        if num_same == 0:
-            continue
-        precision = num_same / len(pred_tokens)
-        recall = num_same / len(gold_tokens)
-        best_f1 = max(best_f1, 2 * precision * recall / (precision + recall))
-    return float(best_f1)
-
-
 def _efficiency_reward(t_c, d, max_turns, eps=1e-6):
     if t_c < 0:
-        return 0.025 * d
+        return 0.0
     if t_c == 0:
         return 0.4 - 0.05 * d
 
@@ -144,31 +117,25 @@ class RewardManager():
         self.agent_config = agent_config
 
         efficiency_config = _config_get(agent_config, 'efficiency_reward', {})
-        quality_config = _config_get(agent_config, 'quality_reward', {})
         self.efficiency_enabled = bool(_config_get(efficiency_config, 'enable', True))
-        self.quality_enabled = bool(_config_get(quality_config, 'enable', True))
-        self.f1_threshold = float(_config_get(efficiency_config, 'f1_threshold', 0.75))
+        self.f1_threshold = float(_config_get(efficiency_config, 'f1_threshold', 0.85))
         self.efficiency_weight = float(_config_get(efficiency_config, 'weight', 0.25))
-        self.quality_weight = float(_config_get(quality_config, 'weight', 0.15))
         self.max_turns = int(_config_get(agent_config, 'max_turns', 5))
 
     def _score_intermediate_answers(self, data_source, ground_truth, candidate_texts):
         answers = [_extract_last_answer(text) for text in candidate_texts]
         if data_source in CLOSED_ENDED_SOURCES:
             golden_answers = _target_list(ground_truth)
-            success_scores = [1.0 if qa_em.em_check(answer, golden_answers) else 0.0 for answer in answers]
-            quality_scores = [_closed_token_f1(answer, golden_answers) for answer in answers]
-            return success_scores, quality_scores
+            return [1.0 if qa_em.em_check(answer, golden_answers) else 0.0 for answer in answers]
 
         references = _target_list(ground_truth)
-        f1_scores = batch_f1_reward_fn(candidate_texts, references, threshold=self.f1_threshold)
-        return f1_scores, f1_scores
+        return batch_f1_reward_fn(candidate_texts, references, threshold=self.f1_threshold)
 
     def _compute_probe_rewards(self, data_source, ground_truth, candidate_texts, candidate_depths, actual_search_depth):
         if not candidate_texts:
-            return -1, 0.0, 0.0, 0.0, 0.0
+            return -1, 0.0, 0.0, 0.0
 
-        success_scores, quality_scores = self._score_intermediate_answers(data_source, ground_truth, candidate_texts)
+        success_scores = self._score_intermediate_answers(data_source, ground_truth, candidate_texts)
         success_flags = []
         for score in success_scores:
             if data_source in CLOSED_ENDED_SOURCES:
@@ -177,23 +144,19 @@ class RewardManager():
                 success_flags.append(score >= self.f1_threshold)
 
         ordered = sorted(
-            zip(candidate_depths, success_flags, quality_scores),
+            zip(candidate_depths, success_flags),
             key=lambda item: item[0],
         )
         t_c = -1
-        for depth, success, _ in ordered:
+        for depth, success in ordered:
             if success:
                 t_c = int(depth)
                 break
 
-        zero_depth_scores = [score for depth, score in zip(candidate_depths, quality_scores) if int(depth) == 0]
-        score_0 = zero_depth_scores[0] if zero_depth_scores else 0.0
-        best_score = max(quality_scores) if quality_scores else 0.0
-        raw_quality = max(0.0, best_score - score_0)
         raw_efficiency = _efficiency_reward(t_c, actual_search_depth, self.max_turns)
         over_search = max(0, actual_search_depth - t_c) if t_c >= 0 else 0
         success_ratio = 1.0 if t_c >= 0 else 0.0
-        return t_c, raw_efficiency, raw_quality, over_search, success_ratio
+        return t_c, raw_efficiency, over_search, success_ratio
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -248,7 +211,7 @@ class RewardManager():
             candidate_texts.append(sequences_str)
             candidate_depths.append(actual_search_depth)
 
-            t_c, raw_efficiency, raw_quality, over_search, tc_success = self._compute_probe_rewards(
+            t_c, raw_efficiency, over_search, tc_success = self._compute_probe_rewards(
                 data_source=data_source,
                 ground_truth=ground_truth,
                 candidate_texts=candidate_texts,
@@ -257,23 +220,18 @@ class RewardManager():
             )
 
             efficiency_component = self.efficiency_weight * raw_efficiency if self.efficiency_enabled else 0.0
-            quality_component = self.quality_weight * raw_quality if self.quality_enabled else 0.0
-            score = base_score + efficiency_component + quality_component
+            score = base_score + efficiency_component
 
             metrics = {
                 'base_mean': float(base_score),
                 **base_metrics,
                 'raw_efficiency_mean': float(raw_efficiency),
-                'raw_quality_mean': float(raw_quality),
                 'efficiency_mean': float(efficiency_component),
-                'quality_mean': float(quality_component),
                 'final_mean': float(score),
                 'efficiency_weight': float(self.efficiency_weight),
-                'quality_weight': float(self.quality_weight),
                 'tc_mean': float(t_c),
                 'tc_success_ratio': float(tc_success),
                 'over_search_mean': float(over_search),
-                'intermediate_score_gain_mean': float(raw_quality),
             }
             
             # with print_lock:

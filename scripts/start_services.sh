@@ -15,6 +15,11 @@ set -uo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-$HOME/autodl-tmp/Researcher}"
 CONDA_BASE_PATH="${CONDA_EXE%/bin/conda}" # 自动获取 conda 根路径
 
+# 缓存重定向：HF / ModelScope / pip / torch 全部下到数据盘
+# 后续每条 nohup bash -c "..." 也会重复 source，保证子 shell 一定有
+source "$PROJECT_ROOT/scripts/env.sh"
+ENV_SH="$PROJECT_ROOT/scripts/env.sh"
+
 # 内部子模块路径自适应
 if [ -d "$PROJECT_ROOT/o2searcher" ]; then
     WIKI_DIR="$PROJECT_ROOT/o2searcher/searcher/search_env/wiki_search"
@@ -36,31 +41,49 @@ err()  { echo -e "${RED}[ERR ]${NC} $*"; }
 step() { echo -e "\n${CYAN}== $* ==${NC}"; }
 
 # 修复核心：针对不同网关和底座，使用特定的协议和路由进行健康检查
+#
+# 注意一个隐蔽 bug：curl 连不上时，%{http_code} 仍会输出 "000" 到 stdout，
+# 再叠加 "|| echo 000" 后 code 会变成 6 位的 "000000"。原来的判断
+# `[ "$code" != "000" ] && [ "$code" != "00" ]` 对 "000000" 恒真，导致
+# 服务挂了脚本反而报 ✅ ONLINE。下面用 case 严格只认 200/404/405。
 wait_port() {
     local port=$1
     local name=$2
     local timeout=$3
-    
+    local code=""
+    local curl_rc=0
+
     for ((i=0; i<timeout; i+=2)); do
         sleep 2
-        local code="000"
-        
+        code="000"
+        curl_rc=0
+
         # 针对 8000 端口的维基服务，使用 POST 请求探测其核心路由 /retrieve
+        # 注意：body 必须匹配 QueryRequest(queries, topk, return_scores) 的 Pydantic schema；
+        #       旧版 "text" 字段会被 422 拒掉，且 return_scores=true 才能避开 endpoint 里
+        #       `results, scores = batch_search(...)` 在 return_score=False 时只返回 1 个值的 bug
         if [ "$port" == "8000" ]; then
             code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:8000/retrieve" \
-                  -H "Content-Type: application/json" -d '{"text": "test", "topk": 1}' --max-time 2 2>/dev/null || echo "000")
+                  -H "Content-Type: application/json" -d '{"queries": ["test"], "topk": 1, "return_scores": true}' --max-time 5 2>/dev/null)
         else
             # 其他标准 FastAPI 网关使用标准的 GET 探测
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://127.0.0.1:$port" 2>/dev/null || echo "000")
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://127.0.0.1:$port" 2>/dev/null)
         fi
-        
-        # 只要返回 200, 404(说明路由存在但没匹配上) 或 405(方法不允许，说明服务在线) 都算成功
-        if [ "$code" != "000" ] && [ "$code" != "00" ]; then
-            info "   ✅ $name 状态正常 (HTTP $code, 耗时 ${i}s)"
-            return 0
+        curl_rc=$?
+
+        # 真正"在线"必须满足两个条件：
+        #   1) curl 退出码 0（成功发出了请求并收到响应）
+        #   2) HTTP 状态码是 200 / 404 / 405 之一（404 路由未匹配、405 方法不允许，都说明服务进程在）
+        if [ "$curl_rc" -eq 0 ]; then
+            case "$code" in
+                200|404|405)
+                    info "   ✅ $name 状态正常 (HTTP $code, 耗时 ${i}s)"
+                    return 0
+                    ;;
+            esac
         fi
     done
-    err "   ❌ $name 响应超时，请检查 logs/ 下对应的日志文件。"
+    err "   ❌ $name 响应超时（最近一次 code=$code, curl_rc=$curl_rc），请检查 logs/ 下对应的日志文件。"
     return 1
 }
 
@@ -144,10 +167,10 @@ if is_running wiki_server.py; then
     info "   wiki_server 已经在后台运行中"
 else
     # 修复：放弃 conda run，改用最硬核稳定的后台启动
-    nohup bash -c "source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python $WIKI_DIR/wiki_server.py --index_path $WIKI_DIR/data/e5_Flat.index --corpus_path $WIKI_DIR/data/wiki-18.jsonl --retriever_model $WIKI_DIR/model/e5-base-v2 --topk 3" > logs/wiki.log 2>&1 &
+    nohup bash -c "source $ENV_SH && source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python $WIKI_DIR/wiki_server.py --index_path $WIKI_DIR/data/e5_Flat.index --corpus_path $WIKI_DIR/data/wiki-18.jsonl --retriever_model $WIKI_DIR/model/e5-base-v2 --topk 3" > logs/wiki.log 2>&1 &
     
-    info "   正在将 30GB 稠密索引搬运至 GPU（约需 40-60 秒）..."
-    wait_port 8000 "wiki_server底座" 120 || { tail -50 logs/wiki.log; exit 1; }
+    info "   正在将 60GB 索引 + 14GB 语料搬运至多卡 GPU + HuggingFace datasets 缓存（约需 2-5 分钟）..."
+    wait_port 8000 "wiki_server底座" 360 || { tail -80 logs/wiki.log; exit 1; }
 fi
 
 # ============================================================================
@@ -159,7 +182,7 @@ cd "$WEB_DIR"
 if is_running 'python web_search.py'; then
     info "   web_search 已经在运行中"
 else
-    nohup bash -c "source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python web_search.py" > "$PROJECT_ROOT/logs/web.log" 2>&1 &
+    nohup bash -c "source $ENV_SH && source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python web_search.py" > "$PROJECT_ROOT/logs/web.log" 2>&1 &
     wait_port 10000 "web_search包装器" 20
 fi
 
@@ -174,7 +197,7 @@ cd "$PROJECT_ROOT"
 if is_running 'run_openended.py'; then
     info "   run_openended 已经在运行中"
 else
-    nohup bash -c "source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python ${SRC_PREFIX}searcher/run_openended.py --local_url http://127.0.0.1:10000/search --model_name deepseek-v4 --port 10102" > logs/open.log 2>&1 &
+    nohup bash -c "source $ENV_SH && source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python ${SRC_PREFIX}searcher/run_openended.py --local_url http://127.0.0.1:10000/search --model_name qwen-turbo --port 10102" > logs/open.log 2>&1 &
     wait_port 10102 "OpenEnded网关" 20
 fi
 
@@ -182,7 +205,7 @@ fi
 if is_running 'run_closedended.py'; then
     info "   run_closedended 已经在运行中"
 else
-    nohup bash -c "source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python ${SRC_PREFIX}searcher/run_closedended.py --local_url http://127.0.0.1:8000/retrieve --port 10001" > logs/closed.log 2>&1 &
+    nohup bash -c "source $ENV_SH && source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python ${SRC_PREFIX}searcher/run_closedended.py --local_url http://127.0.0.1:8000/retrieve --port 10001" > logs/closed.log 2>&1 &
     wait_port 10001 "ClosedEnded网关" 20
 fi
 
@@ -190,8 +213,10 @@ fi
 if is_running 'o2searcher.rewards.metrics.server'; then
     info "   metrics server 已经在运行中"
 else
-    nohup bash -c "source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && export PYTHONPATH=$PROJECT_ROOT:$PROJECT_ROOT/o2searcher && python -m o2searcher.rewards.metrics.server --port 11000" > logs/metrics.log 2>&1 &
-    wait_port 11000 "MetricServer" 20
+    nohup bash -c "source $ENV_SH && source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && export PYTHONPATH=$PROJECT_ROOT:$PROJECT_ROOT/o2searcher && export HF_ENDPOINT=https://hf-mirror.com && python -m o2searcher.rewards.metrics.server --port 11000" > logs/metrics.log 2>&1 &
+    # server.py 模块顶层就实例化 QueryIndependenceTransformer + FindingSentenceEvaluator，
+    # uvicorn.run 之前要等这两个 evaluator 初始化完，端口 11000 才会被绑定，20s 完全不够
+    wait_port 11000 "MetricServer" 180
 fi
 
 # ============================================================================
@@ -207,14 +232,19 @@ echo "   ├────────────────┼─────�
 for entry in "7700:Meilisearch" "8000:WikiBase" "10000:WebSearch" "10001:ClosedGateway" "10102:OpenGateway" "11000:MetricServer"; do
     port="${entry%%:*}"
     name="${entry##*:}"
-    
+
+    code="000"
+    curl_rc=0
+
     if [ "$port" == "8000" ]; then
-        code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:8000/retrieve" -H "Content-Type: application/json" -d '{"text": "t", "topk": 1}' --max-time 2 2>/dev/null || echo "000")
+        code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:8000/retrieve" -H "Content-Type: application/json" -d '{"queries": ["t"], "topk": 1, "return_scores": true}' --max-time 5 2>/dev/null)
     else
-        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://127.0.0.1:$port" 2>/dev/null || echo "000")
+        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 "http://127.0.0.1:$port" 2>/dev/null)
     fi
-    
-    if [ "$code" != "000" ] && [ "$code" != "00" ]; then
+    curl_rc=$?
+
+    # 同样的假阳性修复：必须 curl 成功退出且 code 是 200/404/405 才算在线
+    if [ "$curl_rc" -eq 0 ] && { [ "$code" = "200" ] || [ "$code" = "404" ] || [ "$code" = "405" ]; }; then
         printf "   │ %-14s │ %-7s │ ✅ ONLINE │\n" "$name" "$port"
     else
         printf "   │ %-14s │ %-7s │ ❌ DOWN   │\n" "$name" "$port"

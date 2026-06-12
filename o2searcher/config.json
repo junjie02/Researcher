@@ -27,8 +27,15 @@
     },
     "qwen2.5": {
         "model_name": "Qwen2.5-72B-Instruct",
-        "api_key_var": "", 
+        "api_key_var": "",
         "base_url": "",
         "proxy": false
+    },
+    "qwen-turbo": {
+        "model_name": "qwen-turbo",
+        "api_key_var": "sk-12107bae278e474eb49d7d1c76f88480",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "proxy": false,
+        "extra_body": {"enable_thinking": false}
     }
 }

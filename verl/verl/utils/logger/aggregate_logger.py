@@ -22,7 +22,12 @@ def concat_dict_to_str(dict: Dict, step):
     output = [f'step:{step}']
     for k, v in dict.items():
         if isinstance(v, numbers.Number):
-            output.append(f'{k}:{v:.3f}')
+            # 小于 0.001 的非零浮点数（如 1e-6 的 learning rate）会被 .3f 截成 0.000，
+            # 改用科学计数法保留精度
+            if isinstance(v, float) and v != 0.0 and abs(v) < 0.001:
+                output.append(f'{k}:{v:.2e}')
+            else:
+                output.append(f'{k}:{v:.3f}')
     output_str = ' - '.join(output)
     return output_str
 

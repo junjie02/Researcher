@@ -179,8 +179,5 @@ agent:
   intermediate_answer_max_tokens: 512
   efficiency_reward:
     enable: true
-    f1_threshold: 0.75
+    f1_threshold: 0.85
     weight: 0.25
-  quality_reward:
-    enable: true
-    weight: 0.15
