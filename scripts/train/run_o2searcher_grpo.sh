@@ -1,4 +1,3 @@
-#!/bin/bash
 set -x
 
 # 缓存重定向：HF / ModelScope / pip / torch 全部下到数据盘
@@ -36,7 +35,7 @@ python3 -m verl.trainer.main_ppo \
     data.max_prompt_length=8096 \
     data.max_response_length=2048 \
     data.max_start_length=2048 \
-    data.max_obs_length=3072 \
+    data.max_obs_length=2048 \
     actor_rollout_ref.model.path=$MODEL_PATH  \
     actor_rollout_ref.actor.optim.lr=3e-6 \
     actor_rollout_ref.actor.state_masking=True \
@@ -45,7 +44,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.ppo_micro_batch_size=16 \
     actor_rollout_ref.actor.ppo_epochs=1 \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
-    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=24567 \
+    actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16384 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
@@ -58,7 +57,9 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.temperature=1 \
     actor_rollout_ref.rollout.val_temperature=0.6 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.60 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.65 \
+    actor_rollout_ref.rollout.enforce_eager=True \
+    actor_rollout_ref.rollout.free_cache_engine=True\
     actor_rollout_ref.rollout.n_agent=8 \
     actor_rollout_ref.rollout.n_agent_val=1 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size=64 \
@@ -78,7 +79,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.total_epochs=3 \
     agent.max_turns=4 \
     agent.intermediate_answer_max_tokens=2048 \
-    agent.efficiency_reward.enable=True \
+    agent.efficiency_reward.enable=False \
     agent.efficiency_reward.f1_threshold=0.85 \
     agent.efficiency_reward.weight=0.15 \
     searcher.urls.openended="http://127.0.0.1:10102/search" \

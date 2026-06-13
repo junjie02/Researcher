@@ -197,7 +197,7 @@ cd "$PROJECT_ROOT"
 if is_running 'run_openended.py'; then
     info "   run_openended 已经在运行中"
 else
-    nohup bash -c "source $ENV_SH && source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python ${SRC_PREFIX}searcher/run_openended.py --local_url http://127.0.0.1:10000/search --model_name qwen-turbo --port 10102" > logs/open.log 2>&1 &
+    nohup bash -c "source $ENV_SH && source $CONDA_BASE_PATH/etc/profile.d/conda.sh && conda activate researcher && python ${SRC_PREFIX}searcher/run_openended.py --local_url http://127.0.0.1:10000/search --model_name qwen-flash --port 10102" > logs/open.log 2>&1 &
     wait_port 10102 "OpenEnded网关" 20
 fi
 

@@ -122,16 +122,20 @@ class AbstractAgent:
     def __init__(self, model_name):
         model_name, api_key, base_url, proxy_url, extra_body = get_config(model_name)
 
+        # Batch 端点允许最长 1h 等待,默认 openai 客户端 timeout 不够,需显式放大到 3600s。
+        # connect 单独限制为 10s,避免网络/防火墙问题让请求一直挂在 TCP 握手阶段。
+        batch_timeout = httpx.Timeout(3600.0, connect=10.0)
         if proxy_url:
             self.client = openai.OpenAI(
                 api_key=api_key,
                 # base_url=base_url,
-                http_client=httpx.Client(proxy=proxy_url)
+                http_client=httpx.Client(proxy=proxy_url, timeout=batch_timeout)
             )
         else:
             self.client = openai.OpenAI(
                 api_key=api_key,
-                base_url=base_url
+                base_url=base_url,
+                timeout=batch_timeout
             )
 
         self.model_name = model_name

@@ -203,23 +203,26 @@ class RewardManager():
                 data_source=data_source,
             )
 
-            actual_search_depth = int(data_item.meta_info.get('valid_search_stats', [0] * len(data))[i])
-            intermediate_answers = data_item.meta_info.get('intermediate_answers', [[] for _ in range(len(data))])[i]
-            intermediate_depths = data_item.meta_info.get('intermediate_depths', [[] for _ in range(len(data))])[i]
-            candidate_texts = list(intermediate_answers)
-            candidate_depths = [int(depth) for depth in intermediate_depths]
-            candidate_texts.append(sequences_str)
-            candidate_depths.append(actual_search_depth)
+            if self.efficiency_enabled:
+                actual_search_depth = int(data_item.meta_info.get('valid_search_stats', [0] * len(data))[i])
+                intermediate_answers = data_item.meta_info.get('intermediate_answers', [[] for _ in range(len(data))])[i]
+                intermediate_depths = data_item.meta_info.get('intermediate_depths', [[] for _ in range(len(data))])[i]
+                candidate_texts = list(intermediate_answers)
+                candidate_depths = [int(depth) for depth in intermediate_depths]
+                candidate_texts.append(sequences_str)
+                candidate_depths.append(actual_search_depth)
 
-            t_c, raw_efficiency, over_search, tc_success = self._compute_probe_rewards(
-                data_source=data_source,
-                ground_truth=ground_truth,
-                candidate_texts=candidate_texts,
-                candidate_depths=candidate_depths,
-                actual_search_depth=actual_search_depth,
-            )
-
-            efficiency_component = self.efficiency_weight * raw_efficiency if self.efficiency_enabled else 0.0
+                t_c, raw_efficiency, over_search, tc_success = self._compute_probe_rewards(
+                    data_source=data_source,
+                    ground_truth=ground_truth,
+                    candidate_texts=candidate_texts,
+                    candidate_depths=candidate_depths,
+                    actual_search_depth=actual_search_depth,
+                )
+                efficiency_component = self.efficiency_weight * raw_efficiency
+            else:
+                t_c, raw_efficiency, over_search, tc_success = -1, 0.0, 0.0, 0.0
+                efficiency_component = 0.0
             score = base_score + efficiency_component
 
             metrics = {

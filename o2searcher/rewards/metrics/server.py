@@ -16,7 +16,7 @@ args = parser.parse_args()
 app = FastAPI(title="Metrics")
 
 
-model_name = 'qwen-turbo'
+model_name = 'qwen-flash'
 calculator = QueryIndependenceTransformer(model_name)
 evaluator = FindingSentenceEvaluator(model_name)
 

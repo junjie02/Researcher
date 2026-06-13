@@ -31,10 +31,10 @@
         "base_url": "",
         "proxy": false
     },
-    "qwen-turbo": {
-        "model_name": "qwen-turbo",
+    "qwen-flash": {
+        "model_name": "qwen-flash",
         "api_key_var": "sk-12107bae278e474eb49d7d1c76f88480",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "base_url": "https://batch.dashscope.aliyuncs.com/compatible-mode/v1",
         "proxy": false,
         "extra_body": {"enable_thinking": false}
     }
