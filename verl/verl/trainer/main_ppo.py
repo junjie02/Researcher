@@ -22,7 +22,7 @@ from verl.utils.reward_score import qa_em
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 
 
-from o2searcher.rewards.rewards_format import format_reward_fn
+from o2searcher.rewards.rewards_format import format_reward_fn, _structure_reward
 from o2searcher.rewards.rewards_score import batch_f1_reward_fn, dv_reward_fn, f1_reward_fn
 
 CLOSED_ENDED_SOURCES = ['nq_hotpotqa', 'nq', 'triviaqa', 'popqa', 'hotpotqa', '2wikimultihopqa', 'musique', 'bamboogle']
@@ -84,26 +84,36 @@ def _query_list(queries):
 
 
 def _base_reward(solution_str, ground_truth, queries, data_source):
-    format_score = format_reward_fn(solution_str).reward
+    format_output = format_reward_fn(solution_str, data_source=data_source)
+    format_score = format_output.reward
+    structure_output = _structure_reward(solution_str)
+    structure_score = structure_output.reward
     dv_score = dv_reward_fn(_query_list(queries))
     if data_source in CLOSED_ENDED_SOURCES:
         accuracy_score = qa_em.compute_score_em(solution_str=solution_str, ground_truth=ground_truth, queries=queries)
     else:
         accuracy_score = f1_reward_fn(solution_str, _target_list(ground_truth))
 
-    weights = [1.0, 1.0, 0.5]
-    base_score = 0.5 * (
+    weights = [0.5, 2.0, 0.5, 0.5]  # format, accuracy, dv, structure
+    total_weight = sum(weights)
+    base_score = (
         weights[0] * format_score +
         weights[1] * accuracy_score +
-        weights[2] * dv_score
-    ) / sum(weights)
+        weights[2] * dv_score +
+        weights[3] * structure_score
+    ) / total_weight
     return float(base_score), {
         'format_mean': float(format_score),
         'accuracy_mean': float(accuracy_score),
         'dv_mean': float(dv_score),
-        'format_weighted_mean': float(0.5 * weights[0] * format_score / sum(weights)),
-        'accuracy_weighted_mean': float(0.5 * weights[1] * accuracy_score / sum(weights)),
-        'dv_weighted_mean': float(0.5 * weights[2] * dv_score / sum(weights)),
+        'structure_mean': float(structure_score),
+        'format_weighted_mean': float(weights[0] * format_score / total_weight),
+        'accuracy_weighted_mean': float(weights[1] * accuracy_score / total_weight),
+        'dv_weighted_mean': float(weights[2] * dv_score / total_weight),
+        'structure_weighted_mean': float(weights[3] * structure_score / total_weight),
+        'think_structure': float(structure_output.metrics.get('think_structure', 0.0)),
+        'search_structure': float(structure_output.metrics.get('search_structure', 0.0)),
+        'answer_structure': float(structure_output.metrics.get('answer_structure', 0.0)),
     }
 
 
@@ -244,7 +254,7 @@ class RewardManager():
             #     if already_print_data_sources[data_source] < self.num_examine:
             #         already_print_data_sources[data_source] += 1
             #         print(sequences_str)      
-            return i, score, valid_response_length, metrics
+            return i, score, valid_response_length, metrics, data_source
 
         # Process items in parallel using ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=96) as executor:
@@ -252,13 +262,23 @@ class RewardManager():
             results = list(executor.map(process_item, args))
 
         # Fill reward tensor with results
+        from collections import defaultdict
         reward_metrics = {}
-        for i, score, valid_response_length, metrics in results:
+        per_source = defaultdict(lambda: defaultdict(list))
+        for i, score, valid_response_length, metrics, data_source in results:
             reward_index = max(valid_response_length - 1, 0)
             reward_tensor[i, reward_index] = score
             for key, value in metrics.items():
+                # global metric (zero-padded to full batch length)
                 reward_metrics.setdefault(key, [0.0] * len(data))
                 reward_metrics[key][i] = value
+                # per-data-source metric (only values for this source)
+                per_source[data_source][key].append(value)
+
+        # Flatten per-source metrics into reward_metrics
+        for source, source_metrics in per_source.items():
+            for key, values in source_metrics.items():
+                reward_metrics[f'{key}/{source}'] = values
 
         data.meta_info['reward_metrics'] = reward_metrics
 

@@ -70,61 +70,122 @@ def calculate_diversity_reward(content_list, similarity_threshold=0.6, top_k=1):
         print(f"Error calculating diversity reward: {str(e)}")
         return 0.5  # Neutral fallback
 
-def calculate_format_reward(model_answer):
+def calculate_format_reward(model_answer, data_source='openended'):
     if not model_answer.strip() or model_answer.strip().lower() == 'and':
         return FormatOutput(reward=0.0)
-    
-    lines = [line.strip() for line in model_answer.split('\n') if line.strip()]
-    if not lines:
-        return FormatOutput(reward=0.0)
 
-    valid_bullets = 0
+    # close-ended: 不检查 - 格式，有内容就给满分
+    if data_source != 'openended':
+        return FormatOutput(
+            reward=1.0,
+            metrics={
+                'format': 1.0,
+                'completeness': 1.0,
+                'diversity': 1.0,
+                'duplicate_penalty': 0.0
+            }
+        )
+
+    # open-ended: 以 "- " 为分隔符切割 bullet，不依赖 \n
+    # parts[0] = 第一个 "- " 之前的文本（非空即格式错误）
+    # parts[1:] = 每个 bullet 的内容（可能跨多行）
+    parts = model_answer.split('- ')
     content_list = []
     format_errors = 0
-    
-    for line in lines:
-        if line.startswith('- '):
-            content = line[2:].strip()
-            if content:
-                valid_bullets += 1
-                content_list.append(content)
-            else:
-                format_errors += 1
-        else:
-            format_errors += 1
-    
-    format_reward = 1 - (format_errors / len(lines))
-    completeness_reward = min(valid_bullets / 10, 1)  # 10条得满分
+
+    if parts[0].strip():
+        format_errors += 1
+
+    for part in parts[1:]:
+        # 合并换行为空格，压缩空白 → 一行一 bullet
+        content = ' '.join(part.split())
+        if content:
+            content_list.append(content)
+
+    if not content_list:
+        return FormatOutput(reward=0.0)
+
+    # open-ended: 检查 - 格式 + 数量 + 多样性
+    valid_bullets = len(content_list)
+    format_reward = 1 - (format_errors / max(1, valid_bullets + format_errors))
+    completeness_reward = min(valid_bullets / 10, 1)
     diversity_reward = calculate_diversity_reward(content_list)
-    
+
     unique_ratio = len(set(content_list)) / max(1, len(content_list))
     duplicate_penalty = 1 - unique_ratio
-    
+
     weights = [0.5, 0.3, 0.5]
     reward = (
         (weights[0] * format_reward +
-        weights[1] * completeness_reward +
-        weights[2] * diversity_reward) / sum(weights) - 
-        3*duplicate_penalty
+         weights[1] * completeness_reward +
+         weights[2] * diversity_reward) / sum(weights) -
+        3 * duplicate_penalty
     )
-    
+    metrics = {
+        'format': weights[0] * format_reward,
+        'completeness': weights[1] * completeness_reward,
+        'diversity': weights[2] * diversity_reward,
+        'duplicate_penalty': -3 * duplicate_penalty
+    }
+
     return FormatOutput(
         reward=max(0, min(1, reward)),
-        metrics={
-            'format': weights[0] * format_reward,
-            'completeness': weights[1] * completeness_reward,
-            'diversity': weights[2] * diversity_reward,
-            'duplicate_penalty': -3*duplicate_penalty
-        }
+        metrics=metrics
     )
 
-def format_reward_fn(solution_str: str):
+def format_reward_fn(solution_str: str, data_source: str = 'openended'):
     model_answer = extract_answer(solution_str)
     if model_answer is None:
         return FormatOutput(reward=0.0)
 
-    format_reward_output = calculate_format_reward(model_answer)
+    format_reward_output = calculate_format_reward(model_answer, data_source)
     return format_reward_output
+
+
+def _structure_reward(solution_str: str):
+    """Score output structure: presence of <think>, <search>, <answer> tags with content.
+
+    Scans the full solution string (all turns) for structural completeness.
+    Content quality is NOT evaluated — that's handled by format_reward_fn and accuracy.
+
+    Returns FormatOutput with reward in [0, 1].
+    """
+    think_matches = re.findall(r'<think>(.*?)</think>', solution_str, re.DOTALL)
+    search_matches = re.findall(r'<search>(.*?)</search>', solution_str, re.DOTALL)
+    answer_matches = re.findall(r'<answer>(.*?)</answer>', solution_str, re.DOTALL)
+
+    # think: has tag + content = 1.0, has tag but empty = 0.3, missing = 0.0
+    if think_matches:
+        has_think_content = any(t.strip() for t in think_matches)
+        think_score = 1.0 if has_think_content else 0.3
+    else:
+        think_score = 0.0
+
+    # search: has tag + content = 1.0, has tag but empty = 0.3, missing = 0.0
+    if search_matches:
+        has_search_content = any(s.strip() for s in search_matches)
+        search_score = 1.0 if has_search_content else 0.3
+    else:
+        search_score = 0.0
+
+    # answer: has tag + content = 1.0, missing = 0.0
+    if answer_matches:
+        has_answer_content = any(a.strip() for a in answer_matches)
+        answer_score = 1.0 if has_answer_content else 0.0
+    else:
+        answer_score = 0.0
+
+    weights = [0.3, 0.3, 0.4]  # think, search, answer
+    structure_score = weights[0] * think_score + weights[1] * search_score + weights[2] * answer_score
+
+    return FormatOutput(
+        reward=float(structure_score),
+        metrics={
+            'think_structure': think_score,
+            'search_structure': search_score,
+            'answer_structure': answer_score,
+        }
+    )
 
 
 if __name__ == '__main__':

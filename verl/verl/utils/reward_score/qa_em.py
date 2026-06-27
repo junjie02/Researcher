@@ -79,7 +79,11 @@ def extract_solution(solution_str):
         return None
     
     # Return the last answer when multiple answer tags appear.
-    return matches[-1].group(1).strip()
+    answer_text = matches[-1].group(1).strip()
+    # 去掉前导 "- "（模型可能因 prompt 习惯加了 bullet 前缀）
+    if answer_text.startswith('- '):
+        answer_text = answer_text[2:].strip()
+    return answer_text
 
 
 def compute_score_em(solution_str, ground_truth, queries=None, method='strict', format_score=0., score=1.):

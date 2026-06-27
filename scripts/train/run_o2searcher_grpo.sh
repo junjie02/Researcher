@@ -30,7 +30,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.kl_ctrl.kl_coef=0.001 \
     data.train_files=$TRAIN_FILES \
     data.val_files=$VAL_FILES \
-    data.train_batch_size=32 \
+    data.train_batch_size=16 \
     data.val_batch_size=256 \
     data.max_prompt_length=8096 \
     data.max_response_length=2048 \
@@ -40,7 +40,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.optim.lr=3e-6 \
     actor_rollout_ref.actor.state_masking=True \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
     actor_rollout_ref.actor.ppo_micro_batch_size=16 \
     actor_rollout_ref.actor.ppo_epochs=1 \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
